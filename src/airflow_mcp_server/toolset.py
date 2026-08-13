@@ -154,7 +154,14 @@ class AirflowOpenAPIToolset:
                 except json.JSONDecodeError:
                     text = body.decode("utf-8", errors="replace")
                     return [types.TextContent(type="text", text=text)]
-                return ([], parsed)
+                # Populate `content` alongside `structuredContent`. Per the
+                # MCP spec, servers should provide a `content` fallback even
+                # when `structuredContent` is also returned, for clients
+                # that only read `content`. Returning content=[] here left
+                # every successful JSON response invisible to such clients
+                # even though the call succeeded and structuredContent had
+                # the real data.
+                return ([types.TextContent(type="text", text=json.dumps(parsed))], parsed)
 
             text = body.decode("utf-8", errors="replace")
             return [types.TextContent(type="text", text=text)]
