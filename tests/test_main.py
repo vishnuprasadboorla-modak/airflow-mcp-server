@@ -112,7 +112,7 @@ def test_main_env_overrides_cli(runner):
 
                     assert result.exit_code == 0
                     # Environment variables take precedence in current implementation
-                    mock_config.assert_called_once_with(base_url="http://env:8080", auth_token="env-token")
+                    mock_config.assert_called_once_with(base_url="http://env:8080", auth_token="env-token", username=None, password=None)
 
 
 def test_main_resources_dir_cli_option(runner):
@@ -133,7 +133,7 @@ def test_main_resources_dir_cli_option(runner):
                 )
 
                 assert result.exit_code == 0
-                mock_config.assert_called_once_with(base_url="http://localhost:8080", auth_token="token")
+                mock_config.assert_called_once_with(base_url="http://localhost:8080", auth_token="token", username=None, password=None)
                 assert mock_serve.call_args[1]["resources_dir"] == "/tmp/resources"
 
 
@@ -151,7 +151,7 @@ def test_main_resources_dir_env_var(runner):
                     )
 
                     assert result.exit_code == 0
-                    mock_config.assert_called_once_with(base_url="http://localhost:8080", auth_token="token")
+                    mock_config.assert_called_once_with(base_url="http://localhost:8080", auth_token="token", username=None, password=None)
                     assert mock_serve.call_args[1]["resources_dir"] == "/env/docs"
 
 
@@ -176,7 +176,7 @@ def test_main_resources_dir_cli_precedence(runner):
                     )
 
                     assert result.exit_code == 0
-                    mock_config.assert_called_once_with(base_url="http://localhost:8080", auth_token="token")
+                    mock_config.assert_called_once_with(base_url="http://localhost:8080", auth_token="token", username=None, password=None)
                     assert mock_serve.call_args[1]["resources_dir"] == "/cli/docs"
 
 

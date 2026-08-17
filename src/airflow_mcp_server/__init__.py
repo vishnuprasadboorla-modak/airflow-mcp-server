@@ -16,7 +16,9 @@ from airflow_mcp_server.server_unsafe import serve as serve_unsafe
 @click.option("--unsafe", "-u", is_flag=True, help="Use all tools (default)")
 @click.option("--static-tools", is_flag=True, help="Use static tools instead of hierarchical discovery")
 @click.option("--base-url", help="Airflow API base URL")
-@click.option("--auth-token", help="Authentication token (JWT)")
+@click.option("--auth-token", help="Authentication token (JWT). Static for the process lifetime - prefer --username/--password for long-running deployments.")
+@click.option("--username", help="Airflow username. With --password, enables automatic JWT refresh for the life of the process.")
+@click.option("--password", help="Airflow password.")
 @click.option("--resources-dir", type=str, help="Directory of Markdown files to expose as MCP resources")
 @click.option("--http", is_flag=True, help="Use HTTP (Streamable HTTP) transport instead of stdio")
 @click.option("--sse", is_flag=True, help="Use Server-Sent Events transport (deprecated, use --http instead)")
@@ -30,6 +32,8 @@ def main(
     static_tools: bool,
     base_url: str | None = None,
     auth_token: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
     resources_dir: str | None = None,
     http: bool = False,
     sse: bool = False,
@@ -52,11 +56,13 @@ def main(
 
     config_base_url = os.environ.get("AIRFLOW_BASE_URL") or base_url
     config_auth_token = os.environ.get("AUTH_TOKEN") or auth_token
+    config_username = os.environ.get("AIRFLOW_USERNAME") or username
+    config_password = os.environ.get("AIRFLOW_PASSWORD") or password
     env_resources_dir = os.environ.get("AIRFLOW_MCP_RESOURCES_DIR")
     selected_resources_dir = resources_dir if resources_dir is not None else env_resources_dir
 
     try:
-        config = AirflowConfig(base_url=config_base_url, auth_token=config_auth_token)
+        config = AirflowConfig(base_url=config_base_url, auth_token=config_auth_token, username=config_username, password=config_password)
     except ValueError as e:
         click.echo(f"Configuration error: {e}", err=True)
         sys.exit(1)

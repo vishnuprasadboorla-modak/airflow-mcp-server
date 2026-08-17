@@ -5,12 +5,18 @@ class AirflowConfig:
         self,
         base_url: str | None = None,
         auth_token: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
     ) -> None:
         """Initialize configuration with provided values.
 
         Args:
             base_url: Airflow API base URL
-            auth_token: Authentication token (JWT)
+            auth_token: Static authentication token (JWT). Never refreshed once the
+                server starts - prefer username/password for long-running deployments.
+            username: Airflow username. Combined with password, lets the server fetch
+                and automatically refresh its own JWT for the life of the process.
+            password: Airflow password.
 
         Raises:
             ValueError: If required configuration is missing
@@ -20,5 +26,8 @@ class AirflowConfig:
             raise ValueError("Missing required configuration: base_url")
 
         self.auth_token = auth_token
-        if not self.auth_token:
-            raise ValueError("Missing required configuration: auth_token (JWT)")
+        self.username = username
+        self.password = password
+
+        if not self.auth_token and not (self.username and self.password):
+            raise ValueError("Missing required configuration: auth_token (JWT), or both username and password")

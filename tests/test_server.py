@@ -71,6 +71,7 @@ class _FakeSession:
     def __init__(self, response: Any):
         self._response = response
         self.closed = False
+        self.headers: dict[str, str] = {}
         self.requests: list[tuple[str, dict[str, Any]]] = []
 
     def get(self, path):
@@ -197,8 +198,10 @@ async def test_serve_airflow_requires_valid_config():
     config_no_token = AirflowConfig.__new__(AirflowConfig)
     config_no_token.base_url = "http://localhost"
     config_no_token.auth_token = None
+    config_no_token.username = None
+    config_no_token.password = None
 
-    with pytest.raises(ValueError, match="auth_token is required"):
+    with pytest.raises(ValueError, match="auth_token, or username and password, is required"):
         await server_safe._serve_airflow(
             config=config_no_token,
             allowed_methods={"GET"},
@@ -208,3 +211,40 @@ async def test_serve_airflow_requires_valid_config():
             transport="stdio",
             transport_kwargs={},
         )
+
+
+@pytest.mark.asyncio
+async def test_serve_airflow_uses_token_refresher_for_credentials(monkeypatch, mock_openapi_response):
+    config = AirflowConfig(base_url="http://localhost:8080", username="airflow", password="airflow")
+
+    fake_response = _FakeResponse(mock_openapi_response)
+    fake_session = _FakeSession(fake_response)
+    monkeypatch.setattr("airflow_mcp_server.server_safe.aiohttp.ClientSession", lambda **_: fake_session)
+
+    refresher_instance = AsyncMock()
+
+    async def _fake_start():
+        fake_session.headers["Authorization"] = "Bearer refreshed-token"
+
+    refresher_instance.start.side_effect = _fake_start
+
+    with patch("airflow_mcp_server.server_safe.TokenRefresher", return_value=refresher_instance) as refresher_cls:
+        with patch("airflow_mcp_server.server_safe.AirflowOpenAPIToolset", return_value=Mock()):
+            with patch("airflow_mcp_server.server_safe._register_static_tools"):
+                with patch("airflow_mcp_server.server_safe.register_resources"):
+                    with patch("airflow_mcp_server.server_safe._run_stdio", AsyncMock()):
+                        await server_safe._serve_airflow(
+                            config=config,
+                            allowed_methods={"GET"},
+                            mode_label="Safe Mode",
+                            static_tools=True,
+                            resources_dir=None,
+                            transport="stdio",
+                            transport_kwargs={},
+                        )
+
+    refresher_cls.assert_called_once_with(fake_session, "airflow", "airflow")
+    refresher_instance.start.assert_awaited_once()
+    refresher_instance.stop.assert_awaited_once()
+    assert fake_session.headers["Authorization"] == "Bearer refreshed-token"
+    assert fake_session.closed is True

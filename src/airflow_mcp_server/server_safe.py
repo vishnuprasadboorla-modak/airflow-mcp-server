@@ -19,6 +19,7 @@ from starlette.routing import Mount, Route
 from airflow_mcp_server.config import AirflowConfig
 from airflow_mcp_server.hierarchical_manager import HierarchicalToolManager
 from airflow_mcp_server.resources import register_resources
+from airflow_mcp_server.token_refresher import TokenRefresher
 from airflow_mcp_server.toolset import AirflowOpenAPIToolset
 
 
@@ -54,16 +55,22 @@ async def _serve_airflow(
 ) -> None:
     if not config.base_url:
         raise ValueError("base_url is required")
-    if not config.auth_token:
-        raise ValueError("auth_token is required")
+    if not config.auth_token and not (getattr(config, "username", None) and getattr(config, "password", None)):
+        raise ValueError("auth_token, or username and password, is required")
 
     session = aiohttp.ClientSession(
         base_url=config.base_url,
-        headers={"Authorization": f"Bearer {config.auth_token}"},
         timeout=aiohttp.ClientTimeout(total=30),
     )
 
+    refresher: TokenRefresher | None = None
     try:
+        if config.auth_token:
+            session.headers["Authorization"] = f"Bearer {config.auth_token}"
+        else:
+            refresher = TokenRefresher(session, config.username, config.password)
+            await refresher.start()
+
         async with session.get("/openapi.json") as response:
             response.raise_for_status()
             openapi_spec = await response.json()
@@ -104,6 +111,8 @@ async def _serve_airflow(
         else:  # pragma: no cover
             raise ValueError(f"Unsupported transport '{transport}'")
     finally:
+        if refresher is not None:
+            await refresher.stop()
         await session.close()
 
 
