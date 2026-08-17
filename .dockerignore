@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+tests
+dev_notes
+samples
+airflow-mcp-plugin
+PLAN.md
+ROADMAP.md
+README.md
+CONFIG.md
+AGENTS.md
+.pre-commit-config.yaml

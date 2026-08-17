@@ -19,9 +19,12 @@ FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
-COPY --from=uv /root/.local /root/.local
+RUN groupadd --system app && useradd --system --gid app --no-create-home app
+
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
 
 ENV PATH="/app/.venv/bin:$PATH"
+
+USER app
 
 ENTRYPOINT ["airflow-mcp-server"]
