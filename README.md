@@ -42,6 +42,26 @@ https://github.com/user-attachments/assets/f3e60fff-8680-4dd9-b08e-fa7db655a705
 }
 ```
 
+Or use username/password so the server refreshes its own JWT automatically (recommended for long-running deployments):
+
+```json
+{
+    "mcpServers": {
+        "airflow-mcp-server": {
+            "command": "uvx",
+            "args": [
+                "airflow-mcp-server",
+                "--base-url",
+                "http://localhost:8080",
+                "--username",
+                "<airflow_username>",
+                "--password",
+                "<airflow_password>"
+            ]
+        }
+    }
+}
+```
 
 See [`CONFIG.md`](CONFIG.md) for IDE-specific configuration examples across popular MCP clients.
 
@@ -69,7 +89,7 @@ See [`CONFIG.md`](CONFIG.md) for IDE-specific configuration examples across popu
 > **Note:**
 > - Set `base_url` to the root Airflow URL (e.g., `http://localhost:8080`).
 > - Do **not** include `/api/v2` in the base URL. The server will automatically fetch the OpenAPI spec from `${base_url}/openapi.json`.
-> - Only JWT token is required for authentication. Cookie and basic auth are no longer supported in Airflow 3.0.
+> - You must provide either `--auth-token` (a static JWT) **or** `--username` + `--password` (auto-refreshing JWT). Cookie and basic auth are no longer supported in Airflow 3.0.
 
 ### Transport Options
 
@@ -79,6 +99,8 @@ The server supports multiple transport protocols:
 Standard input/output transport for direct process communication:
 ```bash
 airflow-mcp-server --safe --base-url http://localhost:8080 --auth-token <jwt>
+# or with auto-refreshing credentials
+airflow-mcp-server --safe --base-url http://localhost:8080 --username <user> --password <pass>
 ```
 
 #### HTTP Transport
@@ -131,7 +153,12 @@ Options:
   -u, --unsafe       Use all tools (default)
   --static-tools     Use static tools instead of hierarchical discovery
   --base-url TEXT    Airflow API base URL
-  --auth-token TEXT  Authentication token (JWT)
+  --auth-token TEXT  Authentication token (JWT). Static for the process
+                     lifetime - prefer --username/--password for long-running
+                     deployments.
+  --username TEXT    Airflow username. With --password, enables automatic JWT
+                     refresh for the life of the process.
+  --password TEXT    Airflow password.
   --http             Use HTTP (Streamable HTTP) transport instead of stdio
   --sse              Use Server-Sent Events transport (deprecated, use --http
                      instead)
@@ -157,7 +184,12 @@ airflow-mcp-server --base-url http://localhost:8080 --auth-token <jwt> --resourc
 
 **Authentication**
 
-- Only JWT authentication is supported in Airflow 3.0. You must provide a valid `AUTH_TOKEN`.
+Two authentication methods are supported:
+
+- `--auth-token <jwt>` — provide a pre-issued JWT directly. Simple, but the token is static: once it expires the server must be restarted. Also configurable via the `AUTH_TOKEN` environment variable.
+- `--username <user> --password <pass>` — the server logs in to Airflow's `/auth/token` endpoint on startup and automatically re-fetches a fresh JWT before each token expires. No restarts needed. Also configurable via `AIRFLOW_USERNAME` / `AIRFLOW_PASSWORD` environment variables.
+
+You must supply one of the two options above. Cookie and basic auth are no longer supported in Airflow 3.0.
 
 **Page Limit**
 
