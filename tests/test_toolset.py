@@ -20,7 +20,7 @@ class FakeResponse:
     async def read(self) -> bytes:
         return self._body
 
-    async def __aenter__(self) -> "FakeResponse":
+    async def __aenter__(self) -> FakeResponse:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -81,3 +81,32 @@ async def test_empty_body_still_returns_empty_content(toolset_with_fake_session)
 
     assert content == []
     assert structured == {}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_uses_per_call_session_override(sample_openapi_spec) -> None:
+    """A per-connection session passed into call_tool must be used instead of whatever
+    session (if any) the toolset was constructed with - this is how per-connection auth
+    keeps one user's Airflow identity from being used for another user's request."""
+    parsed = {"dags": []}
+    bound_response = FakeResponse(status=200, headers={"content-type": "application/json"}, body=json.dumps(parsed).encode("utf-8"))
+    override_response = FakeResponse(status=200, headers={"content-type": "application/json"}, body=json.dumps(parsed).encode("utf-8"))
+    bound_session = FakeSession(bound_response)
+    override_session = FakeSession(override_response)
+
+    toolset = AirflowOpenAPIToolset(sample_openapi_spec, allow_mutations=False, session=bound_session)
+
+    await toolset.call_tool("get_dags", {}, session=override_session)
+
+    assert override_session.last_call is not None
+    assert bound_session.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_call_tool_without_any_session_raises_clear_error(sample_openapi_spec) -> None:
+    """A toolset built without a bound session (per-connection auth mode) must fail clearly
+    if a caller forgets to supply a per-call session, rather than crashing on `None.request`."""
+    toolset = AirflowOpenAPIToolset(sample_openapi_spec, allow_mutations=False, session=None)
+
+    with pytest.raises(ValueError, match="No Airflow session available"):
+        await toolset.call_tool("get_dags", {})

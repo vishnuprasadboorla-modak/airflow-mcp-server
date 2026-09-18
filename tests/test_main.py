@@ -286,6 +286,27 @@ def test_main_default_transport(runner):
             assert "host" not in call_args[1]
 
 
+def test_main_stdio_without_credentials_is_rejected(runner):
+    """stdio has no per-connection concept, so it must still require credentials up front."""
+    result = runner.invoke(main, ["--base-url", "http://localhost:8080"])
+
+    assert result.exit_code == 1
+    assert "Configuration error" in result.output
+    assert "stdio/sse transport" in result.output
+
+
+def test_main_http_without_credentials_starts_in_per_connection_mode(runner):
+    """--http may omit all credentials: each connecting client authenticates itself instead."""
+    with patch("airflow_mcp_server.serve_unsafe") as mock_serve:
+        mock_serve.return_value = None
+        with patch("asyncio.run") as mock_asyncio:
+            result = runner.invoke(main, ["--http", "--base-url", "http://localhost:8080"])
+
+            assert result.exit_code == 0
+            assert "per-connection auth mode" in result.output
+            mock_asyncio.assert_called_once()
+
+
 def test_main_custom_host_port(runner):
     """Test main with custom host and port."""
     with patch("airflow_mcp_server.serve_unsafe") as mock_serve:

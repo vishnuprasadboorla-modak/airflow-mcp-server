@@ -20,6 +20,13 @@ class AirflowConfig:
 
         Raises:
             ValueError: If required configuration is missing
+
+        Note:
+            No credential is required here: stdio/SSE transports still need one
+            (enforced by the CLI before startup), but streamable-http transport can
+            omit all three to run in per-connection auth mode, where each connecting
+            client supplies its own Airflow JWT via an 'Authorization: Bearer <jwt>'
+            header instead of sharing one identity baked into the server process.
         """
         self.base_url = base_url
         if not self.base_url:
@@ -28,6 +35,3 @@ class AirflowConfig:
         self.auth_token = auth_token
         self.username = username
         self.password = password
-
-        if not self.auth_token and not (self.username and self.password):
-            raise ValueError("Missing required configuration: auth_token (JWT), or both username and password")

@@ -8,6 +8,7 @@ from mcp import types
 from mcp.server.lowlevel import Server
 
 from airflow_mcp_server.hierarchical_manager import HierarchicalToolManager
+from airflow_mcp_server.per_connection_auth import MissingCredentialsError
 from airflow_mcp_server.toolset import AirflowOpenAPIToolset
 
 
@@ -99,6 +100,7 @@ class FakeToolset:
             outputSchema=None,
         )
         self.last_call: tuple[str, dict[str, str]] | None = None
+        self.last_session = None
 
     def list_tools(self):
         return [self.tool]
@@ -106,8 +108,9 @@ class FakeToolset:
     def get_tool(self, name: str):
         return self.tool, None
 
-    async def call_tool(self, name: str, arguments: dict[str, str]):
+    async def call_tool(self, name: str, arguments: dict[str, str], session=None):
         self.last_call = (name, arguments)
+        self.last_session = session
         return [types.TextContent(type="text", text="ok")]
 
 
@@ -173,3 +176,76 @@ async def test_default_category_not_set_when_missing(spec_without_dag):
     state = server.request_context.session._airflow_category_state
     assert state is not None
     assert state["category"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_tools_requires_authentication_before_showing_anything(sample_openapi_spec):
+    """An unauthenticated connection must not see even the navigation tools - the whole
+    catalog stays hidden until the connection has proven it holds a valid Airflow token."""
+    server = FakeServer()
+    toolset = FakeToolset()
+
+    async def resolve_session():
+        raise MissingCredentialsError("send 'Authorization: Bearer <jwt>'")
+
+    HierarchicalToolManager(cast(Server, server), cast(AirflowOpenAPIToolset, toolset), sample_openapi_spec, {"GET"}, resolve_session=resolve_session)
+
+    list_handler = server.list_handlers[0]
+    with pytest.raises(MissingCredentialsError):
+        await list_handler(None)
+
+
+@pytest.mark.asyncio
+async def test_list_tools_succeeds_once_authenticated(sample_openapi_spec):
+    server = FakeServer()
+    toolset = FakeToolset()
+
+    async def resolve_session():
+        return object()
+
+    HierarchicalToolManager(cast(Server, server), cast(AirflowOpenAPIToolset, toolset), sample_openapi_spec, {"GET"}, resolve_session=resolve_session)
+
+    list_handler = server.list_handlers[0]
+    result = await list_handler(None)
+
+    nav_names = {tool.name for tool in result.tools}
+    assert "browse_categories" in nav_names
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_forwarded_to_toolset(sample_openapi_spec):
+    """When a per-connection resolve_session is configured, its result must be passed through
+    to the toolset call so each connection's own Airflow session is used, not a shared one."""
+    server = FakeServer()
+    toolset = FakeToolset()
+    fake_session = object()
+
+    async def resolve_session():
+        return fake_session
+
+    HierarchicalToolManager(cast(Server, server), cast(AirflowOpenAPIToolset, toolset), sample_openapi_spec, {"GET"}, resolve_session=resolve_session)
+
+    call_handler = server.call_handlers[0]
+    await call_handler("get_dags", {"foo": "bar"})
+
+    assert toolset.last_session is fake_session
+
+
+@pytest.mark.asyncio
+async def test_missing_credentials_returns_error_instead_of_crashing(sample_openapi_spec):
+    """A connection that never supplied Basic Auth credentials should get a clear tool error,
+    not an unhandled exception that tears down the whole MCP session."""
+    server = FakeServer()
+    toolset = FakeToolset()
+
+    async def resolve_session():
+        raise MissingCredentialsError("send 'Authorization: Basic ...'")
+
+    HierarchicalToolManager(cast(Server, server), cast(AirflowOpenAPIToolset, toolset), sample_openapi_spec, {"GET"}, resolve_session=resolve_session)
+
+    call_handler = server.call_handlers[0]
+    result = await call_handler("get_dags", {"foo": "bar"})
+
+    assert toolset.last_call is None
+    assert len(result) == 1
+    assert "Authorization: Basic" in result[0].text

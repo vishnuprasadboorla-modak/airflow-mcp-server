@@ -22,7 +22,7 @@ class PreparedRequest:
 class AirflowOpenAPIToolset:
     """Generate MCP tool definitions from the Airflow OpenAPI specification."""
 
-    def __init__(self, spec: dict[str, Any], allow_mutations: bool, session: aiohttp.ClientSession) -> None:
+    def __init__(self, spec: dict[str, Any], allow_mutations: bool, session: aiohttp.ClientSession | None = None) -> None:
         self._parser = OperationParser(spec)
         self._allow_mutations = allow_mutations
         self._session = session
@@ -129,11 +129,16 @@ class AirflowOpenAPIToolset:
         self,
         name: str,
         arguments: dict[str, Any],
+        session: aiohttp.ClientSession | None = None,
     ) -> list[types.TextContent] | tuple[list[types.TextContent], dict[str, Any]]:
         _, details = self.get_tool(name)
         request = self._prepare_request(details, arguments or {})
 
-        async with self._session.request(
+        active_session = session or self._session
+        if active_session is None:
+            raise ValueError("No Airflow session available for this call")
+
+        async with active_session.request(
             details.method,
             request.path,
             params=request.query or None,

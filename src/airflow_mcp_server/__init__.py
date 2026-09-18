@@ -16,7 +16,11 @@ from airflow_mcp_server.server_unsafe import serve as serve_unsafe
 @click.option("--unsafe", "-u", is_flag=True, help="Use all tools (default)")
 @click.option("--static-tools", is_flag=True, help="Use static tools instead of hierarchical discovery")
 @click.option("--base-url", help="Airflow API base URL")
-@click.option("--auth-token", help="Authentication token (JWT). Static for the process lifetime - prefer --username/--password for long-running deployments.")
+@click.option(
+    "--auth-token",
+    help="Authentication token (JWT). Static for the process lifetime - prefer --username/--password for long-running deployments. "
+    "With --http, omit this along with --username/--password to require each connecting client to supply its own Airflow JWT via an 'Authorization: Bearer <jwt>' header instead.",
+)
 @click.option("--username", help="Airflow username. With --password, enables automatic JWT refresh for the life of the process.")
 @click.option("--password", help="Airflow password.")
 @click.option("--resources-dir", type=str, help="Directory of Markdown files to expose as MCP resources")
@@ -73,6 +77,21 @@ def main(
     else:
         transport_type = "stdio"
         transport_config = {}
+
+    has_static_credentials = bool(config.auth_token) or bool(config.username and config.password)
+    if not has_static_credentials:
+        if transport_type != "streamable-http":
+            click.echo(
+                "Configuration error: auth_token (JWT), or both username and password, is required for stdio/sse transport. "
+                "Only --http transport can omit these, in which case each connecting client must supply its own Airflow JWT via 'Authorization: Bearer <jwt>' instead.",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo(
+            "Starting in per-connection auth mode: no --auth-token/--username+--password given, so each connecting "
+            "client must send its own Airflow JWT via an 'Authorization: Bearer <jwt>' header.",
+            err=True,
+        )
 
     if safe and unsafe:
         raise click.UsageError("Options --safe and --unsafe are mutually exclusive")

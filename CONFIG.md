@@ -614,8 +614,16 @@ docker run -i --rm ghcr.io/abhishekbhakat/airflow-mcp-server --base-url http://h
 
 ### HTTP
 
+`--host 0.0.0.0` is required here: the default `--host localhost` only binds inside the container's own network namespace, so `-p 3000:3000` would otherwise publish a port nothing is actually listening on from the host's point of view.
+
 ```bash
-docker run -i --rm -p 3000:3000 ghcr.io/abhishekbhakat/airflow-mcp-server --http --port 3000 --base-url http://host.docker.internal:8080 --auth-token <jwt_token>
+docker run --rm -p 3000:3000 ghcr.io/abhishekbhakat/airflow-mcp-server --http --port 3000 --host 0.0.0.0 --base-url http://host.docker.internal:8080 --auth-token <jwt_token>
+```
+
+Per-connection auth mode (no shared credential baked into the container - each connecting client supplies its own Airflow JWT via `Authorization: Bearer <jwt>`; see [README.md](README.md#per-connection-authentication-multi-tenant-http)):
+
+```bash
+docker run --rm -p 3000:3000 ghcr.io/abhishekbhakat/airflow-mcp-server --http --port 3000 --host 0.0.0.0 --base-url http://host.docker.internal:8080
 ```
 
 ---

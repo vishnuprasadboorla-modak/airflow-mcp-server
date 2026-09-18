@@ -90,6 +90,43 @@ See [`CONFIG.md`](CONFIG.md) for IDE-specific configuration examples across popu
 > - Set `base_url` to the root Airflow URL (e.g., `http://localhost:8080`).
 > - Do **not** include `/api/v2` in the base URL. The server will automatically fetch the OpenAPI spec from `${base_url}/openapi.json`.
 > - You must provide either `--auth-token` (a static JWT) **or** `--username` + `--password` (auto-refreshing JWT). Cookie and basic auth are no longer supported in Airflow 3.0.
+> - This is a **single shared identity**: every client connected to this server process acts as the same Airflow user. For a multi-tenant HTTP deployment where each client should use its own Airflow account, see [Per-Connection Authentication](#per-connection-authentication-multi-tenant-http) below.
+
+#### Per-Connection Authentication (multi-tenant HTTP)
+
+Running `--http` with **no** `--auth-token`/`--username`/`--password` (and none of `AUTH_TOKEN`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD` set) starts the server in per-connection auth mode: it never logs into Airflow itself, and each connecting MCP client must already hold its own Airflow JWT and send it as a Bearer token:
+
+```json
+{
+    "mcpServers": {
+        "airflow-mcp-server-http": {
+            "url": "http://localhost:3000/mcp",
+            "headers": {
+                "Authorization": "Bearer <jwt>"
+            }
+        }
+    }
+}
+```
+
+```bash
+airflow-mcp-server --http --port 3000 --base-url http://localhost:8080
+```
+
+Each client obtains its own `<jwt>` the same way `--auth-token` does today - by calling Airflow's `/auth/token` with its own username/password:
+
+```bash
+curl -s -X POST http://localhost:8080/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"username": "<airflow_username>", "password": "<airflow_password>"}'
+```
+
+- The connection itself requires the token: every request to `/mcp` (including the initial MCP `initialize` handshake) is rejected with `HTTP 401` unless it carries a syntactically valid `Authorization: Bearer <jwt>` header. A client with no token can't even open an MCP session, let alone see or call a tool.
+- Once connected, the server reads that connection's token on its first tool call and forwards it as-is to Airflow for every subsequent tool call on that same connection - it never sees or stores a username/password, only the token the client already obtained. `tools/list` requires it too, so an unauthenticated connection can't even see the tool catalog.
+- Every new connection must supply its own token again - there's no shared or cached identity across connections, so two users hitting the same running server always act as themselves, never as each other.
+- The server does **not** refresh this token: it's only as long-lived as Airflow's `[api_auth] jwt_expiration_time` (24h by default). If a long-running connection's token expires mid-session, the client needs to reconnect with a fresh one - there's no `--username`/`--password` equivalent auto-refresh in this mode.
+- This mode requires `${base_url}/openapi.json` to be reachable **without** authentication, since the tool list is built once at startup before any client has connected. If your Airflow instance requires auth for that endpoint, use the shared-credential mode above instead.
+- Not available for `stdio`/`--sse` transport - each `stdio` client already gets its own dedicated server process, so there's no multi-tenant problem to solve there.
 
 ### Transport Options
 
