@@ -4,9 +4,11 @@ from typing import Any
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
+from mcp import types
 
 from airflow_mcp_server import server_safe, server_unsafe
 from airflow_mcp_server.config import AirflowConfig
+from airflow_mcp_server.per_connection_auth import MissingCredentialsError
 
 
 @pytest.fixture
@@ -144,7 +146,7 @@ async def test_serve_airflow_hierarchical_http(monkeypatch, mock_config, mock_op
     register_static.assert_not_called()
     manager_cls.assert_called_once()
     register_resources.assert_called_once()
-    run_http.assert_awaited_once_with(ANY, host="127.0.0.1", port=4000)
+    run_http.assert_awaited_once_with(ANY, host="127.0.0.1", port=4000, require_connection_token=False)
     assert fake_session.closed is True
 
 
@@ -248,3 +250,194 @@ async def test_serve_airflow_uses_token_refresher_for_credentials(monkeypatch, m
     refresher_instance.stop.assert_awaited_once()
     assert fake_session.headers["Authorization"] == "Bearer refreshed-token"
     assert fake_session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_serve_airflow_http_without_credentials_enters_per_connection_mode(monkeypatch, mock_openapi_response):
+    """Omitting auth_token/username/password entirely is only valid for streamable-http:
+    it must not raise, must fetch the spec without an Authorization header, and must build
+    the toolset without a bound session since each connection supplies its own later."""
+    config = AirflowConfig.__new__(AirflowConfig)
+    config.base_url = "http://localhost:8080"
+    config.auth_token = None
+    config.username = None
+    config.password = None
+
+    fake_response = _FakeResponse(mock_openapi_response)
+    fake_session = _FakeSession(fake_response)
+    monkeypatch.setattr("airflow_mcp_server.server_safe.aiohttp.ClientSession", lambda **_: fake_session)
+
+    toolset_instance = Mock()
+    with patch("airflow_mcp_server.server_safe.AirflowOpenAPIToolset", return_value=toolset_instance) as toolset_cls:
+        with patch("airflow_mcp_server.server_safe._register_static_tools") as register_static:
+            with patch("airflow_mcp_server.server_safe.register_resources"):
+                run_http = AsyncMock()
+                with patch("airflow_mcp_server.server_safe._run_streamable_http", run_http):
+                    await server_safe._serve_airflow(
+                        config=config,
+                        allowed_methods={"GET"},
+                        mode_label="Safe Mode",
+                        static_tools=True,
+                        resources_dir=None,
+                        transport="streamable-http",
+                        transport_kwargs={},
+                    )
+
+    toolset_cls.assert_called_once_with(mock_openapi_response, allow_mutations=False, session=None)
+    assert "Authorization" not in fake_session.headers
+    register_static.assert_called_once()
+    call_kwargs = register_static.call_args.kwargs
+    assert call_kwargs["resolve_session"] is not None
+    run_http.assert_awaited_once_with(ANY, host="localhost", port=3000, require_connection_token=True)
+    assert fake_session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_serve_airflow_stdio_without_credentials_still_rejected():
+    """Per-connection auth only makes sense for streamable-http; stdio/sse must keep
+    requiring credentials at startup since there is no per-connection concept there."""
+    config = AirflowConfig.__new__(AirflowConfig)
+    config.base_url = "http://localhost:8080"
+    config.auth_token = None
+    config.username = None
+    config.password = None
+
+    with pytest.raises(ValueError, match="auth_token, or username and password, is required"):
+        await server_safe._serve_airflow(
+            config=config,
+            allowed_methods={"GET"},
+            mode_label="Safe Mode",
+            static_tools=True,
+            resources_dir=None,
+            transport="stdio",
+            transport_kwargs={},
+        )
+
+
+class _FakeStaticServer:
+    """Minimal stand-in for mcp.server.lowlevel.Server, just enough to capture the
+    list_tools/call_tool handlers _register_static_tools registers on it."""
+
+    def __init__(self) -> None:
+        self.list_handler = None
+        self.call_handler = None
+
+    def list_tools(self):
+        def decorator(func):
+            self.list_handler = func
+            return func
+
+        return decorator
+
+    def call_tool(self):
+        def decorator(func):
+            self.call_handler = func
+            return func
+
+        return decorator
+
+
+@pytest.mark.asyncio
+async def test_register_static_tools_list_tools_requires_authentication():
+    """A connection that hasn't authenticated yet must not see the tool catalog at all -
+    not just fail once it tries to call one."""
+    server = _FakeStaticServer()
+    toolset = Mock()
+    toolset.list_tools.return_value = [types.Tool(name="get_dags", description="", inputSchema={"type": "object"}, outputSchema=None)]
+
+    async def resolve_session():
+        raise MissingCredentialsError("send 'Authorization: Bearer <jwt>'")
+
+    server_safe._register_static_tools(server, toolset, resolve_session=resolve_session)
+
+    with pytest.raises(MissingCredentialsError):
+        await server.list_handler(None)
+
+
+@pytest.mark.asyncio
+async def test_register_static_tools_list_tools_succeeds_once_authenticated():
+    server = _FakeStaticServer()
+    tool = types.Tool(name="get_dags", description="", inputSchema={"type": "object"}, outputSchema=None)
+    toolset = Mock()
+    toolset.list_tools.return_value = [tool]
+
+    async def resolve_session():
+        return object()
+
+    server_safe._register_static_tools(server, toolset, resolve_session=resolve_session)
+
+    result = await server.list_handler(None)
+
+    assert result.tools == [tool]
+
+
+def _scope_with_headers(headers: dict[str, str]) -> dict[str, Any]:
+    return {"headers": [(name.lower().encode("latin-1"), value.encode("latin-1")) for name, value in headers.items()]}
+
+
+def test_scope_bearer_token_extracts_valid_header():
+    scope = _scope_with_headers({"authorization": "Bearer client-jwt"})
+    assert server_safe._scope_bearer_token(scope) == "client-jwt"
+
+
+def test_scope_bearer_token_returns_none_when_missing():
+    assert server_safe._scope_bearer_token(_scope_with_headers({})) is None
+
+
+def test_scope_bearer_token_returns_none_for_non_bearer_scheme():
+    scope = _scope_with_headers({"authorization": "Basic dXNlcjpwYXNz"})
+    assert server_safe._scope_bearer_token(scope) is None
+
+
+class _RecordingManager:
+    def __init__(self) -> None:
+        self.handled = False
+
+    async def handle_request(self, scope, receive, send):
+        self.handled = True
+
+
+async def _drive_asgi_app(app, scope: dict[str, Any]) -> list[dict[str, Any]]:
+    sent_messages: list[dict[str, Any]] = []
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent_messages.append(message)
+
+    scope.setdefault("type", "http")
+    await app(scope, receive, send)
+    return sent_messages
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_app_rejects_connection_without_token_when_required():
+    manager = _RecordingManager()
+    app = server_safe._StreamableHTTPApp(manager, require_connection_token=True)
+
+    messages = await _drive_asgi_app(app, _scope_with_headers({}))
+
+    assert manager.handled is False
+    start_message = next(m for m in messages if m["type"] == "http.response.start")
+    assert start_message["status"] == 401
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_app_allows_connection_with_valid_token():
+    manager = _RecordingManager()
+    app = server_safe._StreamableHTTPApp(manager, require_connection_token=True)
+
+    await _drive_asgi_app(app, _scope_with_headers({"authorization": "Bearer client-jwt"}))
+
+    assert manager.handled is True
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_app_allows_any_connection_when_not_required():
+    manager = _RecordingManager()
+    app = server_safe._StreamableHTTPApp(manager, require_connection_token=False)
+
+    await _drive_asgi_app(app, _scope_with_headers({}))
+
+    assert manager.handled is True

@@ -1,0 +1,11 @@
+# Assumes AIRFLOW_MCP_TRANSPORT=http (or sse) in .env - see .env.example. For the stdio
+# default, run the image directly instead (`docker run -i ...`); compose isn't a good fit
+# for an interactive stdio process.
+services:
+  airflow-mcp-server:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "${AIRFLOW_MCP_PORT:-3000}:${AIRFLOW_MCP_PORT:-3000}"
+    restart: unless-stopped

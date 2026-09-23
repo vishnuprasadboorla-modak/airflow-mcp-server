@@ -27,4 +27,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 USER app
 
+# Only used when running with --http/--sse; ignored for the default stdio transport.
+EXPOSE 3000
+
 ENTRYPOINT ["airflow-mcp-server"]

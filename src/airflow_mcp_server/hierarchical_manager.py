@@ -6,9 +6,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+import aiohttp
 from mcp import types
 from mcp.server.lowlevel import Server
 
+from airflow_mcp_server.per_connection_auth import MissingCredentialsError
 from airflow_mcp_server.toolset import AirflowOpenAPIToolset
 from airflow_mcp_server.utils.category_mapper import (
     extract_categories_from_openapi,
@@ -32,10 +34,12 @@ class HierarchicalToolManager:
         toolset: AirflowOpenAPIToolset,
         openapi_spec: dict[str, Any],
         allowed_methods: set[str],
+        resolve_session: Callable[[], Awaitable[aiohttp.ClientSession]] | None = None,
     ) -> None:
         self._server = server
         self._toolset = toolset
         self._allowed_methods = allowed_methods
+        self._resolve_session = resolve_session
         self._session_state_attr = "_airflow_category_state"
 
         all_categories = extract_categories_from_openapi(openapi_spec)
@@ -112,6 +116,9 @@ class HierarchicalToolManager:
 
         @self._server.list_tools()
         async def _list_tools(_: types.ListToolsRequest | None = None) -> types.ListToolsResult:
+            if self._resolve_session:
+                await self._resolve_session()  # raises MissingCredentialsError until this connection authenticates
+
             session_state = self._ensure_session_state()
             selected = session_state["category"]
 
@@ -133,7 +140,12 @@ class HierarchicalToolManager:
                 return await handler(arguments or {})
 
             try:
-                return await self._toolset.call_tool(tool_name, arguments or {})
+                session = await self._resolve_session() if self._resolve_session else None
+            except MissingCredentialsError as exc:
+                return [types.TextContent(type="text", text=str(exc))]
+
+            try:
+                return await self._toolset.call_tool(tool_name, arguments or {}, session=session)
             except ValueError as exc:
                 return [types.TextContent(type="text", text=str(exc))]
 

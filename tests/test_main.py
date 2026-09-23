@@ -286,6 +286,27 @@ def test_main_default_transport(runner):
             assert "host" not in call_args[1]
 
 
+def test_main_stdio_without_credentials_is_rejected(runner):
+    """stdio has no per-connection concept, so it must still require credentials up front."""
+    result = runner.invoke(main, ["--base-url", "http://localhost:8080"])
+
+    assert result.exit_code == 1
+    assert "Configuration error" in result.output
+    assert "stdio/sse transport" in result.output
+
+
+def test_main_http_without_credentials_starts_in_per_connection_mode(runner):
+    """--http may omit all credentials: each connecting client authenticates itself instead."""
+    with patch("airflow_mcp_server.serve_unsafe") as mock_serve:
+        mock_serve.return_value = None
+        with patch("asyncio.run") as mock_asyncio:
+            result = runner.invoke(main, ["--http", "--base-url", "http://localhost:8080"])
+
+            assert result.exit_code == 0
+            assert "per-connection auth mode" in result.output
+            mock_asyncio.assert_called_once()
+
+
 def test_main_custom_host_port(runner):
     """Test main with custom host and port."""
     with patch("airflow_mcp_server.serve_unsafe") as mock_serve:
@@ -298,3 +319,96 @@ def test_main_custom_host_port(runner):
             call_args = mock_serve.call_args
             assert call_args[1]["port"] == 8080
             assert call_args[1]["host"] == "0.0.0.0"
+
+
+def test_main_env_transport_overrides_default_stdio(runner):
+    """AIRFLOW_MCP_TRANSPORT=http should switch transport even with no --http flag passed."""
+    env_vars = {"AIRFLOW_MCP_TRANSPORT": "http"}
+    with patch.dict(os.environ, env_vars):
+        with patch("airflow_mcp_server.serve_unsafe") as mock_serve:
+            mock_serve.return_value = None
+            with patch("asyncio.run") as mock_asyncio:
+                result = runner.invoke(main, ["--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+                assert result.exit_code == 0
+                mock_asyncio.assert_called_once()
+                assert mock_serve.call_args[1]["transport"] == "streamable-http"
+
+
+def test_main_env_transport_rejects_invalid_value(runner):
+    env_vars = {"AIRFLOW_MCP_TRANSPORT": "carrier-pigeon"}
+    with patch.dict(os.environ, env_vars):
+        result = runner.invoke(main, ["--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+        assert result.exit_code == 2
+        assert "AIRFLOW_MCP_TRANSPORT must be one of stdio/http/sse" in result.output
+
+
+def test_main_env_mode_overrides_default_unsafe(runner):
+    """AIRFLOW_MCP_MODE=safe should route to serve_safe even with no --safe flag passed."""
+    env_vars = {"AIRFLOW_MCP_MODE": "safe"}
+    with patch.dict(os.environ, env_vars):
+        with patch("airflow_mcp_server.serve_safe") as mock_serve_safe:
+            mock_serve_safe.return_value = None
+            with patch("asyncio.run") as mock_asyncio:
+                result = runner.invoke(main, ["--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+                assert result.exit_code == 0
+                mock_asyncio.assert_called_once()
+                mock_serve_safe.assert_called_once()
+
+
+def test_main_env_mode_rejects_invalid_value(runner):
+    env_vars = {"AIRFLOW_MCP_MODE": "yolo"}
+    with patch.dict(os.environ, env_vars):
+        result = runner.invoke(main, ["--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+        assert result.exit_code == 2
+        assert "AIRFLOW_MCP_MODE must be 'safe' or 'unsafe'" in result.output
+
+
+def test_main_env_port_and_host_override_cli(runner):
+    env_vars = {"AIRFLOW_MCP_PORT": "9999", "AIRFLOW_MCP_HOST": "0.0.0.0"}
+    with patch.dict(os.environ, env_vars):
+        with patch("airflow_mcp_server.serve_unsafe") as mock_serve:
+            mock_serve.return_value = None
+            with patch("asyncio.run"):
+                result = runner.invoke(main, ["--http", "--port", "3000", "--host", "localhost", "--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+                assert result.exit_code == 0
+                assert mock_serve.call_args[1]["port"] == 9999
+                assert mock_serve.call_args[1]["host"] == "0.0.0.0"
+
+
+def test_main_env_port_rejects_non_integer(runner):
+    env_vars = {"AIRFLOW_MCP_PORT": "not-a-number"}
+    with patch.dict(os.environ, env_vars):
+        result = runner.invoke(main, ["--http", "--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+        assert result.exit_code == 2
+        assert "AIRFLOW_MCP_PORT must be an integer" in result.output
+
+
+def test_main_env_static_tools_overrides_cli(runner):
+    env_vars = {"AIRFLOW_MCP_STATIC_TOOLS": "true"}
+    with patch.dict(os.environ, env_vars):
+        with patch("airflow_mcp_server.serve_unsafe") as mock_serve:
+            mock_serve.return_value = None
+            with patch("asyncio.run"):
+                result = runner.invoke(main, ["--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+                assert result.exit_code == 0
+                assert mock_serve.call_args[1]["static_tools"] is True
+
+
+def test_main_env_static_tools_false_overrides_cli_flag(runner):
+    """The env var must win even when it says to turn OFF something the CLI flag turned on."""
+    env_vars = {"AIRFLOW_MCP_STATIC_TOOLS": "false"}
+    with patch.dict(os.environ, env_vars):
+        with patch("airflow_mcp_server.serve_unsafe") as mock_serve:
+            mock_serve.return_value = None
+            with patch("asyncio.run"):
+                result = runner.invoke(main, ["--static-tools", "--base-url", "http://localhost:8080", "--auth-token", "test-token"])
+
+                assert result.exit_code == 0
+                assert mock_serve.call_args[1]["static_tools"] is False

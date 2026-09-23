@@ -614,8 +614,26 @@ docker run -i --rm ghcr.io/abhishekbhakat/airflow-mcp-server --base-url http://h
 
 ### HTTP
 
+`--host 0.0.0.0` is required here: the default `--host localhost` only binds inside the container's own network namespace, so `-p 3000:3000` would otherwise publish a port nothing is actually listening on from the host's point of view.
+
 ```bash
-docker run -i --rm -p 3000:3000 ghcr.io/abhishekbhakat/airflow-mcp-server --http --port 3000 --base-url http://host.docker.internal:8080 --auth-token <jwt_token>
+docker run --rm -p 3000:3000 ghcr.io/abhishekbhakat/airflow-mcp-server --http --port 3000 --host 0.0.0.0 --base-url http://host.docker.internal:8080 --auth-token <jwt_token>
+```
+
+Per-connection auth mode (no shared credential baked into the container - each connecting client supplies its own Airflow JWT via `Authorization: Bearer <jwt>`; see [README.md](README.md#per-connection-authentication-multi-tenant-http)):
+
+```bash
+docker run --rm -p 3000:3000 ghcr.io/abhishekbhakat/airflow-mcp-server --http --port 3000 --host 0.0.0.0 --base-url http://host.docker.internal:8080
+```
+
+Every flag shown above (including `--http`/`--port`/`--host`/`--safe`/`--static-tools`) has an environment variable equivalent - see [.env.example](.env.example) for the full list. That means a Docker deployment can be driven entirely by `--env-file`, with no CLI args at all:
+
+```bash
+cp .env.example .env
+# edit .env: set AIRFLOW_BASE_URL, AIRFLOW_MCP_TRANSPORT=http, AIRFLOW_MCP_HOST=0.0.0.0,
+# and either credentials or none (for per-connection auth mode)
+
+docker run --rm -p 3000:3000 --env-file .env ghcr.io/abhishekbhakat/airflow-mcp-server
 ```
 
 ---
